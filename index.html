@@ -389,6 +389,27 @@
             flex: 1
         }
 
+        body.dragging-links .card {
+            transition: none !important;
+        }
+
+        body.dragging-links .card:hover {
+            transform: none !important;
+        }
+
+        .card.dropMark {
+            outline: 2px solid rgba(76, 201, 240, .35);
+            box-shadow: 0 0 0 6px rgba(76, 201, 240, .10);
+        }
+
+        .card.dropMark.before {
+            box-shadow: inset 0 6px 0 rgba(76, 201, 240, .35), 0 0 0 6px rgba(76, 201, 240, .10);
+        }
+
+        .card.dropMark.after {
+            box-shadow: inset 0 -6px 0 rgba(76, 201, 240, .35), 0 0 0 6px rgba(76, 201, 240, .10);
+        }
+
         @media (max-width: 760px) {
             .grid {
                 grid-template-columns: 1fr
@@ -410,7 +431,8 @@
         <header class="top">
             <div>
                 <h1>HomeDash</h1>
-                <p class="sub">Local (no server). Right-click a card to edit. Drag cards + categories to reorder.</p>
+                <p class="sub">Sleek local dashboard for your selfhosted web apps. Right-click a card to edit. Drag
+                    cards + categories to reorder.</p>
             </div>
 
             <div class="actions">
@@ -497,9 +519,6 @@
 
         // DnD state
         let drag = { type: null, id: null, group: null };
-        const placeholder = document.createElement("div");
-        placeholder.className = "card placeholder";
-        placeholder.draggable = false;
 
         function groupLabel(key) { return key && key.trim() ? key : "Ungrouped"; }
         function groupKeyFromLabel(label) { return label === "Ungrouped" ? "" : (label || "").trim(); }
@@ -628,10 +647,7 @@
         }
 
         function sortLinksInPlace() {
-            links.sort((a, b) =>
-                (a.grp || "").localeCompare(b.grp || "") ||
-                (a.pos ?? 0) - (b.pos ?? 0) ||
-                (a.title || "").localeCompare(b.title || ""));
+            links.sort((a, b) => (a.pos ?? 0) - (b.pos ?? 0));
         }
 
         function renumberPositionsForGroup(groupKey) {
@@ -759,30 +775,49 @@
             document.querySelectorAll(".gridCards.dropTarget").forEach(el => el.classList.remove("dropTarget"));
         }
 
-        function getDragAfterElement(container, x, y) {
-            const draggableElements = [...container.querySelectorAll(".card:not(.placeholder):not(.dragging)")];
-            if (!draggableElements.length) return null;
+        let dropState = { grid: null, index: 0, markEl: null, after: false };
 
-            let closest = null;
-            let closestDist = Infinity;
+        function clearDropMark() {
+            if (dropState.markEl) {
+                dropState.markEl.classList.remove("dropMark", "before", "after");
+            }
+            dropState.grid = null;
+            dropState.index = 0;
+            dropState.markEl = null;
+            dropState.after = false;
+        }
 
-            for (const el of draggableElements) {
-                const r = el.getBoundingClientRect();
-                const cx = r.left + r.width / 2;
-                const cy = r.top + r.height / 2;
-                const dx = cx - x;
-                const dy = cy - y;
-                const dist = dx * dx + dy * dy;
-                if (dist < closestDist) {
-                    closestDist = dist;
-                    closest = el;
-                }
+        function computeDrop(grid, clientX, clientY) {
+            const cards = [...grid.querySelectorAll(".card:not(.dragging)")];
+
+            const el = document.elementFromPoint(clientX, clientY);
+            const card = el ? el.closest(".card:not(.dragging)") : null;
+
+            if (!card || !grid.contains(card)) {
+                return { index: cards.length, markEl: cards[cards.length - 1] || null, after: true };
             }
 
-            if (!closest) return null;
-            const r = closest.getBoundingClientRect();
-            const after = (y > r.top + r.height / 2) || (x > r.left + r.width / 2);
-            return { el: closest, after };
+            const r = card.getBoundingClientRect();
+            const after = clientY > (r.top + r.height / 2);
+
+            const cardIndex = cards.indexOf(card);
+            const index = Math.max(0, Math.min(cards.length, after ? cardIndex + 1 : cardIndex));
+
+            return { index, markEl: card, after };
+        }
+
+        function setDropMark(grid, index, markEl, after) {
+            if (dropState.markEl && dropState.markEl !== markEl) {
+                dropState.markEl.classList.remove("dropMark", "before", "after");
+            }
+            if (markEl) {
+                markEl.classList.add("dropMark", after ? "after" : "before");
+            }
+
+            dropState.grid = grid;
+            dropState.index = index;
+            dropState.markEl = markEl;
+            dropState.after = after;
         }
 
         function moveLinkToGroupAtIndex(linkId, targetGroup, targetIndex) {
@@ -957,23 +992,14 @@
                     e.dataTransfer.dropEffect = "move";
                     grid.classList.add("dropTarget");
 
-                    const after = getDragAfterElement(grid, e.clientX, e.clientY);
-                    if (!grid.contains(placeholder)) grid.appendChild(placeholder);
-
-                    if (after && after.el) {
-                        if (after.after) {
-                            after.el.insertAdjacentElement("afterend", placeholder);
-                        } else {
-                            after.el.insertAdjacentElement("beforebegin", placeholder);
-                        }
-                    } else {
-                        grid.appendChild(placeholder);
-                    }
+                    const { index, markEl, after } = computeDrop(grid, e.clientX, e.clientY);
+                    setDropMark(grid, index, markEl, after);
                 });
 
                 grid.addEventListener("dragleave", () => {
                     if (drag.type !== "link") return;
                     grid.classList.remove("dropTarget");
+                    clearDropMark();
                 });
 
                 grid.addEventListener("drop", (e) => {
@@ -981,13 +1007,14 @@
                     e.preventDefault();
                     grid.classList.remove("dropTarget");
 
-                    const children = [...grid.querySelectorAll(".card:not(.dragging)")];
-                    const idx = Math.max(0, children.indexOf(placeholder));
-                    if (placeholder.parentElement) placeholder.remove();
+                    const idx = (dropState.grid === grid) ? dropState.index : links.length;
+                    clearDropMark();
 
                     moveLinkToGroupAtIndex(drag.id, gKey, idx);
+
                     cleanupDropStyles();
                     drag = { type: null, id: null, group: null };
+                    document.body.classList.remove("dragging-links");
                 });
 
                 for (const item of items) {
@@ -999,14 +1026,18 @@
                     card.addEventListener("dragstart", (e) => {
                         drag = { type: "link", id: item.id, group: (item.grp || "").trim() };
                         card.classList.add("dragging");
+                        document.body.classList.add("dragging-links");
+                        clearDropMark();
                         e.dataTransfer.effectAllowed = "move";
                         e.dataTransfer.setData("text/plain", "link");
                     });
+
                     card.addEventListener("dragend", () => {
                         card.classList.remove("dragging");
-                        if (placeholder.parentElement) placeholder.remove();
+                        clearDropMark();
                         cleanupDropStyles();
                         drag = { type: null, id: null, group: null };
+                        document.body.classList.remove("dragging-links");
                     });
 
                     const favWrap = document.createElement("div");
@@ -1172,10 +1203,10 @@
 
         function hardResetDrag() {
             document.querySelectorAll(".card.dragging").forEach(el => el.classList.remove("dragging"));
-            document.querySelectorAll(".group.dragging").forEach(el => el.classList.remove("dragging"));
-            if (placeholder?.parentElement) placeholder.remove();
+            clearDropMark();
             cleanupDropStyles();
             drag = { type: null, id: null, group: null };
+            document.body.classList.remove("dragging-links");
         }
 
         window.addEventListener("blur", hardResetDrag);
@@ -1215,5 +1246,4 @@
         })();
     </script>
 </body>
-
 </html>
