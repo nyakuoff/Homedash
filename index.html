@@ -239,7 +239,11 @@
             padding: 14px;
             border-radius: 18px;
             border: 1px solid var(--stroke);
-            background: linear-gradient(180deg, rgba(255, 255, 255, .05), rgba(255, 255, 255, .02));
+            background:
+                linear-gradient(135deg,
+                    var(--g1, rgba(76, 201, 240, .14)),
+                    var(--g2, rgba(255, 77, 109, .08))),
+                linear-gradient(180deg, rgba(255, 255, 255, .05), rgba(255, 255, 255, .02));
             cursor: pointer;
             transition: transform .08s ease, background .12s ease, border-color .12s ease;
             user-select: none;
@@ -249,7 +253,7 @@
         .card:hover {
             transform: translateY(-1px);
             background: rgba(255, 255, 255, .08);
-            border-color: rgba(76, 201, 240, .28)
+            border-color: rgba(76, 201, 240, .28);
         }
 
         .card.dragging {
@@ -304,8 +308,7 @@
             overflow: hidden;
             text-overflow: ellipsis
         }
-
-        /* --- dialog: remove default white box --- */
+        
         dialog {
             border: none;
             padding: 0;
@@ -431,7 +434,7 @@
         <header class="top">
             <div>
                 <h1>HomeDash</h1>
-                <p class="sub">Local panel for selfhosted web apps. Right-click a card to edit. Drag
+                <p class="sub">Sleek local dashboard for your selfhosted web apps. Right-click a card to edit. Drag
                     cards + categories to reorder.</p>
             </div>
 
@@ -470,6 +473,11 @@
                         <input id="iconUrl" class="input"
                             placeholder="https://.../icon.png  or  http://192.168.../favicon.ico" />
                         <div class="hint">Tip: for Jellyfin often: http://IP:8096/web/favicon.ico</div>
+                    </label>
+
+                    <label>Card Color (optional)
+                        <input id="color" class="input" placeholder="auto (example: #4cc9f0)" />
+                        <div class="hint">Leave empty = auto color (tries favicon; otherwise stable by hostname)</div>
                     </label>
                 </div>
 
@@ -511,6 +519,8 @@
         const importBtn = $("importBtn");
         const filePick = $("filePick");
         const groupsList = $("groupsList");
+
+        const colorEl = $("color");
 
         // State
         let links = [];
@@ -679,6 +689,7 @@
             urlEl.value = "http://";
             grpEl.value = prefillGroup || "";
             iconUrlEl.value = "";
+            colorEl.value = "";
             rebuildGroupsDatalist();
             dlg.showModal();
             titleEl.focus();
@@ -690,6 +701,7 @@
             deleteBtn.style.display = "inline-flex";
             titleEl.value = item.title || "";
             urlEl.value = item.url || "";
+            colorEl.value = item.color || "";
             grpEl.value = item.grp || "";
             iconUrlEl.value = item.iconUrl || "";
             rebuildGroupsDatalist();
@@ -858,6 +870,136 @@
             render();
         }
 
+        function tryExtractAutoColorFromImg(img, item) {
+            if (normalizeHex(item.color || "")) return;
+
+            try {
+                const w = img.naturalWidth, h = img.naturalHeight;
+                if (!w || !h) return;
+
+                const canvas = document.createElement("canvas");
+                const size = 24;
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+                ctx.drawImage(img, 0, 0, size, size);
+
+                const data = ctx.getImageData(0, 0, size, size).data;
+
+                let rSum = 0, gSum = 0, bSum = 0, n = 0;
+
+                for (let i = 0; i < data.length; i += 4) {
+                    const a = data[i + 3];
+                    if (a < 60) continue;
+                    const r = data[i], g = data[i + 1], b = data[i + 2];
+
+                    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+                    if ((max - min) < 18) continue;
+
+                    rSum += r; gSum += g; bSum += b; n++;
+                }
+
+                if (n < 8) return;
+
+                const r = Math.round(rSum / n);
+                const g = Math.round(gSum / n);
+                const b = Math.round(bSum / n);
+
+                const hex = rgbToHex(r, g, b);
+
+                if (normalizeHex(item.autoColor || "") !== hex) {
+                    item.autoColor = hex;
+                    persistSoon();
+                }
+            } catch {
+            }
+        }
+
+        function isHexColor(s) {
+            return /^#([0-9a-f]{6}|[0-9a-f]{3})$/i.test((s || "").trim());
+        }
+        function normalizeHex(hex) {
+            hex = (hex || "").trim();
+            if (!isHexColor(hex)) return "";
+            if (hex.length === 4) {
+                hex = "#" + hex[1] + hex[1] + hex[2] + hex[2] + hex[3] + hex[3];
+            }
+            return hex.toLowerCase();
+        }
+        function hexToRgb(hex) {
+            hex = normalizeHex(hex);
+            if (!hex) return null;
+            const n = parseInt(hex.slice(1), 16);
+            return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+        }
+        function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+        function rgbToHex(r, g, b) {
+            const to = (x) => x.toString(16).padStart(2, "0");
+            return `#${to(clamp(r | 0, 0, 255))}${to(clamp(g | 0, 0, 255))}${to(clamp(b | 0, 0, 255))}`;
+        }
+
+        function hashHue(str) {
+            let h = 0;
+            for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0;
+            return h % 360;
+        }
+        function hslToRgb(h, s, l) {
+            s /= 100; l /= 100;
+            const c = (1 - Math.abs(2 * l - 1)) * s;
+            const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+            const m = l - c / 2;
+            let r = 0, g = 0, b = 0;
+            if (h < 60) [r, g, b] = [c, x, 0];
+            else if (h < 120) [r, g, b] = [x, c, 0];
+            else if (h < 180) [r, g, b] = [0, c, x];
+            else if (h < 240) [r, g, b] = [0, x, c];
+            else if (h < 300) [r, g, b] = [x, 0, c];
+            else[r, g, b] = [c, 0, x];
+            return { r: Math.round((r + m) * 255), g: Math.round((g + m) * 255), b: Math.round((b + m) * 255) };
+        }
+
+        function gradientFromHex(hex) {
+            const rgb = hexToRgb(hex);
+            if (!rgb) return null;
+
+            const c1 = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, .22)`;
+            const c2 = `rgba(${clamp(rgb.r + 25, 0, 255)}, ${clamp(rgb.g + 18, 0, 255)}, ${clamp(rgb.b + 35, 0, 255)}, .10)`;
+            return { g1: c1, g2: c2 };
+        }
+
+        function gradientFromHost(url, title) {
+            let key = (title || "").trim();
+            try { key = new URL(url).hostname || key; } catch { }
+            if (!key) key = url || "app";
+            const hue = hashHue(key);
+            const a = hslToRgb(hue, 85, 60);
+            const b = hslToRgb((hue + 28) % 360, 85, 52);
+            return {
+                g1: `rgba(${a.r}, ${a.g}, ${a.b}, .22)`,
+                g2: `rgba(${b.r}, ${b.g}, ${b.b}, .10)`
+            };
+        }
+
+        let persistTimer = null;
+        function persistSoon() {
+            clearTimeout(persistTimer);
+            persistTimer = setTimeout(() => persist(), 250);
+        }
+
+        function applyCardGradient(card, item) {
+            const manual = normalizeHex(item.color || "");
+            const auto = normalizeHex(item.autoColor || "");
+
+            const grad =
+                (manual && gradientFromHex(manual)) ||
+                (auto && gradientFromHex(auto)) ||
+                gradientFromHost(item.url, item.title);
+
+            card.style.setProperty("--g1", grad.g1);
+            card.style.setProperty("--g2", grad.g2);
+        }
+
         function render() {
             const q = search.value.trim();
             const filtered = links.filter(x => matches(x, q));
@@ -1023,6 +1165,8 @@
                     card.dataset.linkId = item.id;
                     card.draggable = true;
 
+                    applyCardGradient(card, item);
+
                     card.addEventListener("dragstart", (e) => {
                         drag = { type: "link", id: item.id, group: (item.grp || "").trim() };
                         card.classList.add("dragging");
@@ -1051,6 +1195,7 @@
                     img.alt = "";
                     img.loading = "lazy";
                     img.referrerPolicy = "no-referrer";
+                    img.crossOrigin = "anonymous";
 
                     const srcs = [];
                     const iconUrl = (item.iconUrl || "").trim();
@@ -1073,6 +1218,9 @@
                             } catch {
                                 letterFallback();
                             }
+                        });
+                        img.addEventListener("load", () => {
+                            tryExtractAutoColorFromImg(img, item);
                         });
                         favWrap.appendChild(img);
                     }
@@ -1135,13 +1283,15 @@
                         nextGroups = Array.isArray(parsed.groupOrder) ? parsed.groupOrder : [];
                     }
 
-                    links = nextLinks.map(x => ({
+                    links = links.map(x => ({
                         id: x.id || crypto.randomUUID(),
                         title: String(x.title || "").trim(),
                         url: ensureHttp(String(x.url || "").trim()),
                         grp: String(x.grp || "").trim(),
                         pos: Number.isFinite(x.pos) ? Number(x.pos) : 0,
-                        iconUrl: String(x.iconUrl || "").trim()
+                        iconUrl: String(x.iconUrl || "").trim(),
+                        color: String(x.color || "").trim(),
+                        autoColor: String(x.autoColor || "").trim(),
                     })).filter(x => x.title && x.url);
 
                     groupOrder = nextGroups.map(g => String(g || "").trim());
@@ -1172,7 +1322,8 @@
                 title: titleEl.value.trim(),
                 url: ensureHttp(urlEl.value.trim()),
                 grp: grpEl.value.trim(),
-                iconUrl: iconUrlEl.value.trim()
+                iconUrl: iconUrlEl.value.trim(),
+                color: colorEl.value.trim()
             };
 
             if (!payload.title || !payload.url) return;
@@ -1230,7 +1381,9 @@
                 url: ensureHttp(String(x.url || "").trim()),
                 grp: String(x.grp || "").trim(),
                 pos: Number.isFinite(x.pos) ? Number(x.pos) : 0,
-                iconUrl: String(x.iconUrl || "").trim()
+                iconUrl: String(x.iconUrl || "").trim(),
+                color: String(x.color || "").trim(),
+                autoColor: String(x.autoColor || "").trim(),
             })).filter(x => x.title && x.url);
 
             groupOrder = loadJson(GROUPS_KEY, null);
@@ -1247,5 +1400,3 @@
     </script>
 </body>
 </html>
-
-
